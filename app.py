@@ -18,6 +18,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { background-color: #161b22; border-radius: 5px; color: white; padding: 10px 20px; }
     .stTabs [aria-selected="true"] { background-color: #238636; }
     div[data-testid="stExpander"] { border: 1px solid #30363d; background-color: #0e1117; }
+    .status-box { padding: 20px; border-radius: 10px; text-align: center; font-weight: bold; font-size: 24px; margin-bottom: 20px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -61,7 +62,7 @@ def fetch_data(tickers, period="2y"):
 # --- 3. SIDEBAR CONFIGURATION ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2620/2620611.png", width=60)
-    st.title("Alpha Terminal v1.0")
+    st.title("Alpha Terminal v1.1")
     st.caption("Quant-Driven Portfolio Management")
     
     st.divider()
@@ -78,12 +79,22 @@ with st.sidebar:
     st.divider()
     st.caption("© 2024 Manuel Kössler | Professional Financial Tool")
 
-# --- 4. DATA PROCESSING ---
+# --- 4. DATA PROCESSING & MARKET STATUS ---
 market_data = fetch_data(portfolio_list)
 benchmark = market_data["^GSPC"]
+sma200_mkt = benchmark.rolling(window=200).mean()
+current_mkt_price = benchmark.iloc[-1]
+current_mkt_sma = sma200_mkt.iloc[-1]
+market_bullish = current_mkt_price > current_mkt_sma
 
 # --- 5. MAIN INTERFACE ---
-st.title("💹 Quant-Engineer Alpha Terminal")
+
+# Große Markt-Status Anzeige
+if market_bullish:
+    st.markdown(f'<div class="status-box" style="background-color: #238636; color: white;">MARKET STATUS: BULLISH 🟢 (Full Risk Exposure Active)</div>', unsafe_allow_html=True)
+else:
+    st.markdown(f'<div class="status-box" style="background-color: #da3633; color: white;">MARKET STATUS: BEARISH 🔴 (Defensive Cash Mode Active)</div>', unsafe_allow_html=True)
+
 tab1, tab2, tab3, tab4 = st.tabs(["🎯 Action Plan", "🔭 Opportunity Scanner", "📈 Technical Analysis", "🧪 Strategy Backtest"])
 
 # TAB 1: PORTFOLIO ACTION
@@ -148,7 +159,7 @@ with tab3:
         fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-# TAB 4: BACKTEST ENGINE (THE "SALES" FEATURE)
+# --- TAB 4: ULTIMATIVE BACKTEST ENGINE (MARKT-FILTER + EINZELPREISE + SL) ---
 with tab4:
     st.subheader("🧪 Professional Strategy Simulation")
     col_a, col_b, col_c = st.columns(3)
@@ -157,58 +168,94 @@ with tab4:
     with col_c: n_stocks = st.slider("Stocks in Portfolio:", 3, 10, 3)
     
     if st.button("🧪 Execute Simulation"):
-        with st.spinner("Processing Alpha..."):
+        with st.spinner("Processing Alpha, Prices & Market Regime..."):
             bt_ticks = portfolio_list if bt_univ == "Watchlist" else get_sp500_tickers()
-            s_date = (datetime.now() - timedelta(days=bt_years*365 + 100)).strftime('%Y-%m-%d')
+            # Puffer für SMA200 und RS-Berechnung
+            s_date = (datetime.now() - timedelta(days=bt_years*365 + 250)).strftime('%Y-%m-%d')
             data_bt = yf.download(bt_ticks + ["^GSPC"], start=s_date, progress=False)['Close']
             if isinstance(data_bt.columns, pd.MultiIndex): data_bt.columns = data_bt.columns.get_level_values(0)
             data_bt = data_bt.ffill().dropna(axis=1, how='all')
             bm = data_bt["^GSPC"]
+            bm_sma = bm.rolling(window=200).mean()
             
             rs_h = pd.DataFrame(index=data_bt.index)
             for t in bt_ticks:
                 if t in data_bt.columns and t != "^GSPC":
                     rat = data_bt[t] / bm
-                    rs_h[t] = (rat / rat.rolling(50).mean()) - 1
+                    rs_h[t] = (rat / rat.rolling(window=50).mean()) - 1
             
             f_code = 'ME' if freq == "Monthly" else 'W-MON'
             t_dates = data_bt.groupby(pd.Grouper(freq=f_code)).apply(lambda x: x.index[-1]).dropna()
             
             c = cap_start; c_history = []; t_log = []; f_date = None
+            
             for i in range(len(t_dates)-1):
                 cur, nxt = t_dates[i], t_dates[i+1]
-                if cur not in rs_h.index: continue
+                if cur not in rs_h.index or cur not in bm_sma.index: continue
+                
+                # Market Regime Check
+                is_bull = bm.loc[cur] > bm_sma.loc[cur]
+                exposure = 1.0 if is_bull else 0.2 
+                
                 rank = rs_h.loc[cur].dropna().sort_values(ascending=False)
                 if len(rank) < n_stocks: continue
                 if f_date is None: f_date = cur
                 
                 sel = rank.head(n_stocks).index.tolist()
-                cash_p_s = (c / n_stocks) * 0.998 # 0.2% Fee
+                invested_cap = c * exposure
+                cash_reserve = c * (1 - exposure)
+                
+                # 0.2% Gebühr beim Kauf
+                cash_p_s = (invested_cap / n_stocks) * 0.998 
                 p_res = []
                 details = []
+                
                 for ticker in sel:
-                    b_p = data_bt.loc[cur, ticker]; d_p = data_bt.loc[cur:nxt, ticker]
-                    low_p = d_p.min(); fin_p = d_p.iloc[-1]
+                    b_p = data_bt.loc[cur, ticker]
+                    # Check Daily Prices für Stop-Loss
+                    d_p = data_bt.loc[cur:nxt, ticker]
+                    low_p = d_p.min()
+                    fin_p = d_p.iloc[-1]
+                    
                     if low_p <= b_p * 0.85: # 15% Stop Loss
-                        exit_p = b_p * 0.85; stat = "🚨SL"
-                    else: exit_p = fin_p; stat = "OK"
+                        exit_p = b_p * 0.85
+                        stat = "🚨SL"
+                    else: 
+                        exit_p = fin_p
+                        stat = "OK"
+                    
                     p_res.append(cash_p_s * (exit_p / b_p))
                     details.append(f"{ticker}(In:{b_p:.1f}/Out:{exit_p:.1f}/{stat})")
                 
-                c_prev = c; c = sum(p_res)
-                s_perf = (c / c_prev - 1) * 100; b_perf = (bm.loc[nxt] / bm.loc[cur] - 1) * 100
+                c_prev = c
+                c = sum(p_res) + cash_reserve
+                s_perf = (c / c_prev - 1) * 100
+                b_perf = (bm.loc[nxt] / bm.loc[cur] - 1) * 100
+                
                 c_history.append({"Date": nxt, "Strategy": c})
-                t_log.append({"Date": cur.date(), "Trades": " | ".join(details), "Strat%": f"{s_perf:+.1f}%", "BM%": f"{b_perf:+.1f}%", "Alpha": f"{s_perf-b_perf:+.1f}%", "Value": f"{c:,.0f}"})
+                regime = "BULL 🟢" if is_bull else "BEAR 🔴"
+                
+                t_log.append({
+                    "Date": cur.date(), 
+                    "Regime": regime, 
+                    "Trades (Buy/Sell/Status)": " | ".join(details), 
+                    "Strat%": f"{s_perf:+.1f}%", 
+                    "S&P500%": f"{b_perf:+.1f}%",
+                    "Alpha%": f"{s_perf-b_perf:+.1f}%", 
+                    "Value": f"{c:,.0f}"
+                })
 
             if c_history:
                 res = pd.DataFrame(c_history).set_index("Date")
                 bm_curve = (bm.reindex(res.index) / bm.loc[f_date]) * cap_start
                 st.metric("Final Capital", f"{c:,.0f} USD", f"{(c/cap_start-1)*100:.1f}% Total Return")
                 fig_bt = go.Figure()
-                fig_bt.add_trace(go.Scatter(x=res.index, y=res['Strategy'], name="Strategy (Stop-Loss)", line=dict(color='lime', width=3)))
-                fig_bt.add_trace(go.Scatter(x=res.index, y=bm_curve, name="S&P 500 Benchmark", line=dict(color='gray', dash='dash')))
-                fig_bt.update_layout(template="plotly_dark", height=500); st.plotly_chart(fig_bt, use_container_width=True)
-                with st.expander("📜 Full Audit Log"): st.dataframe(pd.DataFrame(t_log).sort_values(by="Date", ascending=False), use_container_width=True)
-
+                fig_bt.add_trace(go.Scatter(x=res.index, y=res['Strategy'], name="Strategy (Pro)", line=dict(color='lime', width=3)))
+                fig_bt.add_trace(go.Scatter(x=res.index, y=bm_curve, name="S&P 500 B&H", line=dict(color='gray', dash='dash')))
+                fig_bt.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig_bt, use_container_width=True)
+                
+                with st.expander("📜 Full Trade & Price Audit Log"): 
+                    st.dataframe(pd.DataFrame(t_log).sort_values(by="Date", ascending=False), use_container_width=True)
 st.divider()
-st.caption("Quant-Engineer Alpha Terminal | Level: Institutional Grade | Created for Professional Portfolio Scaling")
+st.caption("Quant-Engineer Alpha Terminal | Version 1.2 | Market Regime Filter Active | Created for Professional Portfolio Scaling")
