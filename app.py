@@ -8,7 +8,7 @@ import requests
 from datetime import datetime, timedelta
 
 # --- 1. SETUP & THEME ---
-st.set_page_config(page_title="Quant-Engineer Pro | Alpha Terminal", layout="wide")
+st.set_page_config(page_title="Quant-Data| Alpha Terminal", layout="wide")
 
 st.markdown("""
     <style>
@@ -56,18 +56,22 @@ def calc_rsi(prices, window=14):
 # --- 3. SIDEBAR CONFIGURATION ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2620/2620611.png", width=60)
-    st.title("Alpha Terminal v1.5")
+    st.title("Alpha Terminal v1.9")
     
     st.header("📋 Global Watchlist")
-    default_tickers = "GOOG, AAPL, AMZN, WMT, T, META, NVDA, TSLA, MSFT, LLY, GE, PYPL, SNAP, ASML, PLTR, ADBE, NKE, KO, PFE, UBER, MCD, SBUX, RIO, ORCL, ABNB, BTI, JNJ, PEP, BA, AAL"
-    user_input = st.text_area("Symbols (Max 30):", value=default_tickers, height=150)
-    portfolio_list = [x.strip().upper() for x in user_input.split(",")]
+    # Das Textfeld ist nun die einzige Quelle der Wahrheit
+    default_input = "GOOG, AAPL, AMZN, WMT, T, META, NVDA, TSLA, MSFT, LLY, GE, PYPL, SNAP, ASML, PLTR, ADBE, NKE, KO, PFE, UBER, MCD, SBUX, RIO, ORCL, ABNB, BTI, JNJ, PEP, BA, AAL"
+    user_input = st.text_area("Symbols (Paste here):", value=default_input, height=200)
+    portfolio_list = [x.strip().upper() for x in user_input.split(",") if x.strip()]
     
     st.divider()
     st.header("🧪 Backtest Range")
     start_year = st.number_input("Start Year", 2015, 2024, 2021)
-    end_year = st.number_input("End Year", 2016, 2026, 2024)
-    bt_univ = st.radio("Universe", ["Watchlist", "S&P 500"], horizontal=True)
+    end_year = st.number_input("End Year", 2016, 2026, 2025)
+    bt_univ = st.radio("Backtest Universe", ["Watchlist", "S&P 500"], horizontal=True)
+    
+    hold_period = st.select_slider("Holding Period (Months)", options=[1, 2, 3, 4, 6], value=1)
+    sl_pct = st.slider("Stop Loss (%)", 5, 30, 15)
 
 # --- 4. LIVE MARKET DATA ---
 @st.cache_data(ttl=3600)
@@ -81,45 +85,35 @@ benchmark_live = all_live_data["^GSPC"]
 market_bullish = benchmark_live.iloc[-1] > benchmark_live.rolling(200).mean().iloc[-1]
 
 if market_bullish:
-    st.markdown(f'<div class="status-box" style="background-color: #238636; color: white;">MARKET STATUS: BULLISH 🟢 (Full Risk Exposure)</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="status-box" style="background-color: #238636; color: white;">MARKET STATUS: BULLISH 🟢 (Exposure: 100%)</div>', unsafe_allow_html=True)
 else:
-    st.markdown(f'<div class="status-box" style="background-color: #da3633; color: white;">MARKET STATUS: BEARISH 🔴 (Defensive Mode)</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="status-box" style="background-color: #da3633; color: white;">MARKET STATUS: BEARISH 🔴 (Exposure: 20%)</div>', unsafe_allow_html=True)
 
 # --- 5. TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["🎯 Action Plan", "🔭 Opportunity Scanner", "📈 Technical Analysis", "🧪 Strategy Backtest"])
 
-# TAB 1: PORTFOLIO ACTION
 with tab1:
     results = []
     for t in portfolio_list:
         if t in all_live_data.columns and t != "^GSPC":
             p = all_live_data[t]; curr_p = p.iloc[-1]
-            rs = calc_rs_stable(p, benchmark_live).iloc[-1]
-            rsi = calc_rsi(p).iloc[-1]
+            rs_val = calc_rs_stable(p, benchmark_live).iloc[-1]
+            rsi_val = calc_rsi(p).iloc[-1]
             sma200 = p.rolling(200).mean().iloc[-1]
-            
             if curr_p < sma200: action = "🚨 TREND BREAK"
-            elif rs > 0: action = "🟢 HOLD"
+            elif rs_val > 0: action = "🟢 HOLD"
             else: action = "🔴 SELL"
-            
-            results.append({"Ticker": t, "Name": get_company_name(t), "RS Score": rs, "RSI": rsi, "Trend": "Bull" if curr_p > sma200 else "Bear", "Signal": action})
-    
+            results.append({"Ticker": t, "Name": get_company_name(t), "RS Score": rs_val, "RSI": rsi_val, "Trend": "Bull" if curr_p > sma200 else "Bear", "Signal": action})
     df_tab1 = pd.DataFrame(results).sort_values(by="RS Score", ascending=False)
-    
-    # Styling Tab 1
     def style_signal(val):
         color = '#238636' if 'HOLD' in val else '#da3633' if 'SELL' in val or 'BREAK' in val else ''
         return f'background-color: {color}; color: white; font-weight: bold'
+    st.dataframe(df_tab1.style.map(style_signal, subset=['Signal']).background_gradient(subset=['RS Score'], cmap='RdYlGn').format(subset=['RS Score', 'RSI'], formatter="{:.2f}"), width='stretch', hide_index=True)
 
-    st.dataframe(df_tab1.style.applymap(style_signal, subset=['Signal'])
-                 .background_gradient(subset=['RS Score'], cmap='RdYlGn')
-                 .format(subset=['RS Score', 'RSI'], formatter="{:.2f}"), 
-                 use_container_width=True, hide_index=True)
-
-# TAB 2: SCANNER (Mit Firmennamen)
 with tab2:
+    st.subheader("Global Leader Scan (S&P 500 Universe)")
     if st.button("🚀 Run S&P 500 Scan"):
-        with st.spinner("Analyzing Market Leaders..."):
+        with st.spinner("Scanning Market..."):
             sp500 = get_sp500_tickers()
             sp_raw = yf.download(sp500 + ["^GSPC"], period="1y", progress=False)['Close']
             if isinstance(sp_raw.columns, pd.MultiIndex): sp_raw.columns = sp_raw.columns.get_level_values(0)
@@ -129,11 +123,21 @@ with tab2:
                 if t in sp_raw.columns and t not in portfolio_list:
                     p = sp_raw[t].ffill()
                     if len(p) < 100: continue
-                    rs = calc_rs_stable(p, bm_sp).iloc[-1]
-                    if rs > 0.12: opps.append({"Ticker": t, "Name": get_company_name(t), "RS Score": rs})
-            st.table(pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15))
+                    rs_val = calc_rs_stable(p, bm_sp).iloc[-1]
+                    if rs_val > 0.12: opps.append({"Ticker": t, "Name": get_company_name(t), "RS Score": rs_val})
+            
+            df_opps = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15)
+            st.table(df_opps)
+            
+            # --- NEU: COPY PASTE STRING ---
+            st.divider()
+            st.subheader("📋 Update Watchlist Tool")
+            st.info("Kopiere den folgenden String und füge ihn in die Sidebar ein, um Leader hinzuzufügen:")
+            # Kombiniere existierende Portfolio-Ticker mit den Top 5 neuen Chancen
+            top_new_tickers = df_opps['Ticker'].head(5).tolist()
+            combined_string = ", ".join(portfolio_list + top_new_tickers)
+            st.code(combined_string, language="text")
 
-# TAB 3: ANALYSIS
 with tab3:
     sel_t = st.selectbox("Select Asset:", portfolio_list)
     if sel_t:
@@ -145,18 +149,15 @@ with tab3:
         fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'].rolling(200).mean(), line=dict(color='red'), name="SMA 200"), row=1, col=1)
         rs_line = calc_rs_stable(hist['Close'], benchmark_live)
         fig.add_trace(go.Scatter(x=rs_line.index, y=rs_line, fill='tozeroy', line=dict(color='lime'), name="RS Score"), row=2, col=1)
-        fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False); st.plotly_chart(fig, width='stretch')
 
-# TAB 4: BACKTEST (Farben für Audit Log)
 with tab4:
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_c = st.columns(2)
     with col_a: cap_start = st.number_input("Seed Capital (USD):", value=10000)
-    with col_b: freq = st.selectbox("Freq:", ["Monthly", "Weekly"], index=0)
-    with col_c: n_stocks = st.slider("Positions:", 3, 10, 3)
+    with col_c: n_stocks = st.slider("Positions in Portfolio:", 3, 10, 3)
     
-    if st.button("🧪 Execute Custom Range Backtest"):
-        with st.spinner(f"Simulating {start_year} to {end_year}..."):
+    if st.button("🧪 Execute Advanced Backtest"):
+        with st.spinner(f"Simulating Strategy..."):
             bt_ticks = portfolio_list if bt_univ == "Watchlist" else get_sp500_tickers()
             s_date, e_date = f"{start_year}-01-01", f"{end_year}-12-31"
             s_pre = (datetime.strptime(s_date, "%Y-%m-%d") - timedelta(days=400)).strftime("%Y-%m-%d")
@@ -173,10 +174,11 @@ with tab4:
                 if t in bt_data.columns and t != "^GSPC":
                     rs_h[t] = calc_rs_stable(bt_data[t], bt_data["^GSPC"])
             
-            f_code = 'ME' if freq == "Monthly" else 'W-MON'
+            f_code = f'{hold_period}ME'
             t_dates = bt_data.loc[s_date:e_date].groupby(pd.Grouper(freq=f_code)).apply(lambda x: x.index[-1] if not x.empty else None).dropna()
             
             c = cap_start; c_history, t_log, f_date = [], [], None
+            sl_val = sl_pct / 100
             for i in range(len(t_dates)-1):
                 cur, nxt = t_dates[i], t_dates[i+1]
                 if cur not in rs_h.index or cur not in bm_sma.index: continue
@@ -190,7 +192,7 @@ with tab4:
                 p_res, details = [], []
                 for ticker in sel:
                     b_p = bt_data.loc[cur, ticker]; d_p = bt_data.loc[cur:nxt, ticker]
-                    if d_p.min() <= b_p * 0.85: exit_p = b_p * 0.85; stat = "🚨SL"
+                    if d_p.min() <= b_p * (1 - sl_val): exit_p = b_p * (1 - sl_val); stat = "🚨SL"
                     else: exit_p = d_p.iloc[-1]; stat = "OK"
                     p_res.append(cash_p_s * (exit_p / b_p))
                     details.append(f"{ticker}({b_p:.1f}/{exit_p:.1f}/{stat})")
@@ -203,21 +205,19 @@ with tab4:
             if c_history:
                 res = pd.DataFrame(c_history).set_index("Date")
                 bm_curve = (bm_full.reindex(res.index) / bm_full.loc[f_date]) * cap_start
-                st.metric("Final Capital", f"{c:,.0f} USD", f"{(c/cap_start-1)*100:.1f}%")
+                rolling_max = res['Strategy'].cummax()
+                drawdown = (res['Strategy'] - rolling_max) / rolling_max
+                max_drawdown = drawdown.min() * 100
+                m1, m2 = st.columns(2)
+                m1.metric("Final Capital", f"{c:,.0f} USD", f"{(c/cap_start-1)*100:.1f}% Return")
+                m2.metric("Max Drawdown", f"{max_drawdown:.2f}%", delta_color="inverse")
                 fig_bt = go.Figure()
                 fig_bt.add_trace(go.Scatter(x=res.index, y=res['Strategy'], name="Strategy", line=dict(color='lime', width=3)))
                 fig_bt.add_trace(go.Scatter(x=res.index, y=bm_curve, name="S&P 500", line=dict(color='gray', dash='dash')))
-                st.plotly_chart(fig_bt, use_container_width=True)
-                
-                # Styling Audit Log
+                st.plotly_chart(fig_bt, width='stretch')
                 log_df = pd.DataFrame(t_log).sort_values(by="Date", ascending=False)
-                def style_alpha(val):
-                    return 'color: #238636; font-weight: bold' if val > 0 else 'color: #da3633'
-                
-                st.dataframe(log_df.style.applymap(style_alpha, subset=['Alpha%'])
-                             .format(subset=['Strat%', 'BM%', 'Alpha%'], formatter="{:+.2f}%")
-                             .format(subset=['Value'], formatter="{:,.0f} USD"), 
-                             use_container_width=True, hide_index=True)
+                def style_alpha(val): return 'color: #238636; font-weight: bold' if val > 0 else 'color: #da3633'
+                st.dataframe(log_df.style.map(style_alpha, subset=['Alpha%']).format(subset=['Strat%', 'BM%', 'Alpha%'], formatter="{:+.2f}%").format(subset=['Value'], formatter="{:,.0f} USD"), width='stretch', hide_index=True)
 
 st.divider()
-st.caption("Quant-Engineer Alpha Terminal | v1.5 Styled | © 2024 Manuel Kössler")
+st.caption("Quant-Data-Terminal | v1.9 Action-Oriented | © 2026 Manuel Kössler")
