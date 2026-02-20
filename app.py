@@ -8,7 +8,7 @@ import requests
 from datetime import datetime, timedelta
 
 # --- 1. SETUP & THEME ---
-st.set_page_config(page_title="Alpha Terminal Pro | Quant-Engineer", layout="wide")
+st.set_page_config(page_title="Alpha Terminal Pro v11.1", layout="wide")
 
 st.markdown("""
     <style>
@@ -19,8 +19,9 @@ st.markdown("""
     .stTabs [aria-selected="true"] { background-color: #238636; }
     div[data-testid="stExpander"] { border: 1px solid #30363d; background-color: #0e1117; }
     .status-box { padding: 25px; border-radius: 12px; text-align: center; font-weight: bold; font-size: 26px; margin-bottom: 10px; border: 2px solid #30363d; }
-    .intel-box { padding: 15px; border-radius: 8px; background-color: #1c2128; border-left: 5px solid #238636; margin-bottom: 20px; min-height: 120px; }
-    .fomc-card { background-color: #1c2128; padding: 15px; border-radius: 10px; border-top: 3px solid #238636; margin-bottom: 10px; }
+    .intel-box { padding: 15px; border-radius: 8px; background-color: #1c2128; border-left: 5px solid #238636; margin-bottom: 20px; min-height: 160px; }
+    .outlook-card { background-color: #1c2128; padding: 20px; border-radius: 10px; border-top: 3px solid #388bfd; margin-top: 10px; line-height: 1.6; }
+    .calendar-event { padding: 8px; border-bottom: 1px solid #30363d; font-size: 14px; }
     .disclaimer { font-size: 13px; color: #8b949e; margin-top: 50px; border: 1px solid #da3633; padding: 20px; border-radius: 10px; background-color: #211111; line-height: 1.6; }
     </style>
 """, unsafe_allow_html=True)
@@ -28,21 +29,15 @@ st.markdown("""
 # --- 2. CORE ENGINE FUNCTIONS ---
 
 @st.cache_data(ttl=86400)
-def get_ticker_details(ticker):
+def get_company_static_info(ticker):
     try:
         t = yf.Ticker(ticker)
-        info = t.info
-        return {"Name": info.get('longName', ticker), "Sector": info.get('sector', 'N/A')}
+        inf = t.info
+        return {
+            "Name": inf.get('longName', ticker),
+            "Sector": inf.get('sector', 'N/A')
+        }
     except: return {"Name": ticker, "Sector": "N/A"}
-
-@st.cache_data(ttl=3600)
-def get_sp500_tickers():
-    try:
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
-        return [t.replace('.', '-') for t in pd.read_html(response.text)[0]['Symbol'].tolist()]
-    except: return ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"]
 
 def calc_rs_stable(prices, bm_prices):
     combined = pd.concat([prices, bm_prices], axis=1).ffill().dropna()
@@ -58,171 +53,170 @@ def calc_rsi(prices, window=14):
     loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
     return 100 - (100 / (1 + (gain / loss.replace(0, np.nan)).ffill()))
 
+@st.cache_data(ttl=3600)
+def get_sp500_list():
+    try:
+        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        df = pd.read_html(requests.get(url, headers=headers).text)[0]
+        return [t.replace('.', '-') for t in df['Symbol'].tolist()]
+    except: return ["NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "META"]
+
 def get_market_intelligence(bm_prices):
-    if len(bm_prices) < 200: return "N/A", "Loading...", "N/A", "", "Neutral"
+    if len(bm_prices) < 200: return "N/A", "N/A", "N/A", "", "Neutral"
     sma50 = bm_prices.rolling(50).mean().iloc[-1]
     sma200 = bm_prices.rolling(200).mean().iloc[-1]
     curr = bm_prices.iloc[-1]
     
-    # Phase Logic
-    if curr > sma50 and sma50 > sma200: phase, advice = "PHASE 2: Markup 🚀", "Strong Uptrend. Risk-on."
-    elif curr < sma50 and curr > sma200: phase, advice = "PHASE 3: Distribution ⚠️", "Topping/Correction. Tighten stops."
-    elif curr < sma50 and curr < sma200: phase, advice = "PHASE 4: Markdown 🔴", "Downtrend. Protect capital."
-    else: phase, advice = "PHASE 1: Accumulation 📈", "Basing. Watch RS breakouts."
+    if curr > sma50 and sma50 > sma200: ph, adv = "Markup 🚀 (Phase 2)", "Starker Bullen-Trend. Momentum-Fokus maximieren."
+    elif curr < sma50 and curr > sma200: ph, adv = "Distribution ⚠️ (Phase 3)", "Vorsicht am Top. Volatilität steigt. Stops eng ziehen."
+    elif curr < sma50 and curr < sma200: ph, adv = "Markdown 🔴 (Phase 4)", "Bärenmarkt. 80% Cash-Quote zum Kapitalschutz."
+    else: ph, adv = "Accumulation 📈 (Phase 1)", "Bodenbildung. Auf RS-Ausbrüche neuer Leader achten."
 
-    # Seasonality
-    m_idx = datetime.now().month
-    seasonal_data = {
-        1: ("Januar Effekt", "New inflows."), 2: ("Feb Volatility", "Chop typical."),
-        3: ("Q-End Drive", "Window dressing."), 4: ("April Gold", "Top performance month."),
-        5: ("Sell in May", "Selective mode."), 9: ("Sept Blues", "Historically worst month."),
-        11: ("Year-End Turbo", "Strongest seasonal wind."), 12: ("Santa Rally", "Bullish holiday bias.")
+    m = datetime.now().month
+    s_map = {
+        1: ("Januar: Neujahr-Zuflüsse", "Historisch stark ('January Effect'). Neue Jahresleader etablieren sich."),
+        2: ("Februar: Der Realitätscheck", "Saisonal oft volatil. Verdauung der Januar-Gewinne. Vorsicht zur Monatsmitte."),
+        3: ("März: Quartals-Abschluss", "Fonds optimieren Portfolios. Starke Momentum-Aktien werden oft weiter gepusht."),
+        4: ("April: Das Frühlingsgold", "Einer der besten Monate. Historisch hohe Wahrscheinlichkeit für positive Renditen."),
+        5: ("Mai: Sell in May?", "Beginn der schwächeren Sommerperiode. Markt wird oft selektiver."),
+        6: ("Juni: Konsolidierung", "Oft flaues Volumen. Trends brauchen klare News-Trigger."),
+        7: ("Juli: Sommer-Rallye", "Häufig starke Performance bis zum 20. Juli durch positive Ausblicke."),
+        8: ("August: Rücksetzer-Gefahr", "Geringe Liquidität macht den Markt anfällig für scharfe Korrekturen."),
+        9: ("September: Endgegner", "Statistisch der schlechteste Monat des Jahres. Momentum bricht hier oft."),
+        10: ("Oktober: Trendwende-Monat", "Extrem volatil, markiert historisch oft das Ende von Bärenmärkten."),
+        11: ("November: Jahresend-Turbo", "Start der stärksten 3-Monats-Phase. US-Wahlzyklus & Feiertage treiben Leader."),
+        12: ("Dezember: Santa Rallye", "Positive Grundstimmung. Steuer-Optimierung führt zu Rotation in Gewinner.")
     }
-    s_title, s_desc = seasonal_data.get(m_idx, ("Neutral Season", "Market following technicals."))
-    
-    # Fear & Greed Simulation based on RSI of Benchmark
-    mkt_rsi = calc_rsi(bm_prices).iloc[-1]
-    sentiment = "Greed 🔥" if mkt_rsi > 65 else "Fear 😨" if mkt_rsi < 35 else "Neutral ⚖️"
-    
-    return phase, advice, s_title, s_desc, sentiment
+    s_t, s_d = s_map.get(m, ("Neutral", "Markt folgt technischen Signalen."))
+    sent = "Greed 🔥" if calc_rsi(bm_prices).iloc[-1] > 65 else "Fear 😨" if calc_rsi(bm_prices).iloc[-1] < 35 else "Neutral ⚖️"
+    return ph, adv, s_t, s_d, sent
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2620/2620611.png", width=60)
-    st.title("Alpha Terminal v5.0")
-    user_input = st.text_area("Watchlist Tickers:", value="GOOG, AAPL, AMZN, WMT, T, META, NVDA, TSLA, MSFT, LLY, GE, PYPL, SNAP, ASML, PLTR, ADBE, NKE, KO, PFE, UBER, MCD, SBUX, RIO, ORCL, ABNB, BTI, JNJ, PEP, BA, AAL", height=150)
-    portfolio_list = [x.strip().upper() for x in user_input.split(",") if x.strip()]
+    st.title("Alpha Master v11.1")
+    u_input = st.text_area("Watchlist Tickers:", value="GOOG, AAPL, AMZN, WMT, T, META, NVDA, TSLA, MSFT, LLY, GE, PYPL, SNAP, ASML, PLTR", height=150)
+    portfolio_list = [x.strip().upper() for x in u_input.split(",") if x.strip()]
     st.divider()
-    start_year = st.number_input("Backtest Start Year", 2015, 2024, 2021)
-    end_year = st.number_input("Backtest End Year", 2016, 2026, 2025)
-    bt_univ = st.radio("Backtest Universe", ["Watchlist", "S&P 500"], horizontal=True)
-    hold_period = st.select_slider("Holding Period (Months)", options=[1, 2, 3, 4, 6], value=1)
-    sl_pct = st.slider("Stop Loss (%)", 5, 30, 15)
+    bt_s_year = st.number_input("Backtest Start", 2015, 2024, 2021)
+    bt_e_year = st.number_input("Backtest End", 2016, 2026, 2025)
+    bt_univ_choice = st.radio("Backtest Universe", ["Watchlist", "S&P 500 Index"])
+    hold_mo_val = st.select_slider("Holding (Mo)", options=[1, 2, 3, 4, 6], value=1)
+    sl_input_val = st.slider("Stop Loss %", 5, 30, 15)
 
-# --- 4. DATA ---
-@st.cache_data(ttl=3600)
-def fetch_live_data(tickers):
-    bm = yf.download("^GSPC", period="4y", progress=False)['Close']
-    if isinstance(bm, pd.DataFrame): bm = bm.iloc[:, 0]
-    df = yf.download(tickers, period="4y", progress=False)['Close']
-    if isinstance(df, pd.DataFrame) and isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-    return df.ffill(), bm.ffill()
+# --- 4. DATA FETCH ---
+with st.spinner("Synchronisiere Terminal-Daten..."):
+    bm_prices_full = yf.download("^GSPC", period="5y", progress=False)['Close']
+    if isinstance(bm_prices_full, pd.DataFrame): bm_prices_full = bm_prices_full.iloc[:, 0]
+    live_port_prices = yf.download(portfolio_list, period="4y", progress=False)['Close']
+    if isinstance(live_port_prices.columns, pd.MultiIndex): live_port_prices.columns = live_port_prices.columns.get_level_values(0)
+    live_port_prices = live_port_prices.ffill()
 
-all_data, benchmark = fetch_live_data(portfolio_list)
+# --- 5. HEADER & INTELLIGENCE ---
+m_ph, m_adv, s_t, s_d, m_sent = get_market_intelligence(bm_prices_full)
+m_bull = bm_prices_full.iloc[-1] > bm_prices_full.rolling(200).mean().iloc[-1]
 
-# --- 5. HEADER & STATUS ---
-sma200_live = benchmark.rolling(200).mean()
-market_bullish = benchmark.iloc[-1] > sma200_live.iloc[-1]
-phase, advice, s_title, s_desc, sentiment = get_market_intelligence(benchmark)
+st.markdown(f'<div class="status-box" style="background-color: {"#238636" if m_bull else "#da3633"}; color: white;">MARKET STATUS: {"BULLISH 🟢" if m_bull else "BEARISH 🔴"} | SENTIMENT: {m_sent}</div>', unsafe_allow_html=True)
 
-if market_bullish:
-    st.markdown(f'<div class="status-box" style="background-color: #238636; color: white;">MARKET STATUS: BULLISH 🟢 | SENTIMENT: {sentiment}</div>', unsafe_allow_html=True)
-else:
-    st.markdown(f'<div class="status-box" style="background-color: #da3633; color: white;">MARKET STATUS: BEARISH 🔴 | SENTIMENT: {sentiment}</div>', unsafe_allow_html=True)
-
-c1, c2, c3 = st.columns(3)
-with c1: st.markdown(f'<div class="intel-box"><b>🧠 Phase:</b><br>{phase}<br><span style="font-size: 14px;">{advice}</span></div>', unsafe_allow_html=True)
-with c2: st.markdown(f'<div class="intel-box" style="border-color: #f1e05a;"><b>📅 Saisonalität:</b><br>{s_title}<br><span style="font-size: 14px;">{s_desc}</span></div>', unsafe_allow_html=True)
-with c3:
-    st.markdown(f'<div class="intel-box" style="border-color: #388bfd;"><b>🌐 FOMC Target:</b><br>Mar 19, 2025<br><span style="font-size: 14px;">Market expects stability. Watch the Dot Plot!</span></div>', unsafe_allow_html=True)
+c_i1, c_i2, c_i3 = st.columns(3)
+with c_i1: st.markdown(f'<div class="intel-box" style="border-color: #238636;"><b>🧠 Phase:</b><br>{m_ph}<br><small>{m_adv}</small></div>', unsafe_allow_html=True)
+with c_i2: st.markdown(f'<div class="intel-box" style="border-color: #f1e05a;"><b>📅 Saisonalität:</b><br>{s_t}<br><small>{s_d}</small></div>', unsafe_allow_html=True)
+with c_i3: st.markdown(f'<div class="intel-box" style="border-color: #388bfd;"><b>🌐 Makro-Radar:</b><br>Zins-Stabilität erwartet.<br><small>Fokus auf Inflation (PCE/CPI).</small></div>', unsafe_allow_html=True)
 
 # --- 6. TABS ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎯 Action Plan", "🔭 Scanner", "📈 Charts", "🧪 Backtest", "📖 Strategy & FOMC"])
+t1, t2, t3, t4, t5 = st.tabs(["🎯 Action Plan", "🔭 Scanner", "📈 Charts", "🧪 Backtest", "📖 Strategy & Calendar"])
 
-with tab1:
-    results = []
+with t1:
+    st.subheader("Portfolio Action Radar")
+    res = []
     for t in portfolio_list:
-        if t in all_data.columns and t != "^GSPC":
-            p = all_data[t].dropna()
-            rs_s = calc_rs_stable(p, benchmark)
-            if not rs_s.empty:
-                det = get_ticker_details(t)
-                rs_v, rsi_v = rs_s.iloc[-1], calc_rsi(p).iloc[-1]
-                sma200_s = p.rolling(200).mean().iloc[-1]
-                action = "🚨 SYSTEM EXIT" if p.iloc[-1] < sma200_s else "🟢 HOLD" if rs_v > 0 else "🔴 SELL"
-                results.append({"Ticker": t, "Name": det["Name"], "Sector": det["Sector"], "RS Score": rs_v, "RSI": rsi_v, "Action": action})
-    st.dataframe(pd.DataFrame(results).sort_values(by="RS Score", ascending=False).style.map(lambda x: f'background-color: {"#238636" if "HOLD" in str(x) else "#da3633" if any(y in str(x) for y in ["SELL", "EXIT"]) else ""}; color: white', subset=['Action']).background_gradient(subset=['RS Score'], cmap='RdYlGn').format(subset=['RS Score', 'RSI'], formatter="{:.2f}"), width='stretch', hide_index=True)
+        if t in live_port_prices.columns:
+            p = live_port_prices[t].dropna(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
+            d = get_company_static_info(t)
+            res.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs, "Action": "🟢 HOLD" if rs > 0 else "🔴 SELL"})
+    st.dataframe(pd.DataFrame(res).sort_values(by="RS Score", ascending=False).style.background_gradient(subset=['RS Score'], cmap='RdYlGn'), width='stretch', hide_index=True)
 
-with tab2:
-    if st.button("🚀 Run Universe Scanner"):
-        sp500 = get_sp500_tickers(); sp_raw = yf.download(sp500, period="1y", progress=False)['Close']
-        if isinstance(sp_raw.columns, pd.MultiIndex): sp_raw.columns = sp_raw.columns.get_level_values(0)
-        opps = []
-        for t in sp500:
-            if t in sp_raw.columns and t not in portfolio_list:
-                p = sp_raw[t].ffill()
-                if len(p) < 100: continue
-                rs_s = calc_rs_stable(p, benchmark.reindex(p.index).ffill())
-                if not rs_s.empty and rs_s.iloc[-1] > 0.12:
-                    det = get_ticker_details(t); opps.append({"Ticker": t, "Name": det["Name"], "Sector": det["Sector"], "RS Score": rs_s.iloc[-1]})
-        df_opps = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15); st.table(df_opps)
-        st.code(", ".join([t for t in df_opps['Ticker'].tolist() if t not in portfolio_list]))
+with t2:
+    st.subheader("🔭 S&P 500 Leader Scanner")
+    if st.button("🚀 Run S&P 500 Scan"):
+        with st.spinner("Analyzing leaders..."):
+            sp_all = get_sp500_list(); sp_data = yf.download(sp_all, period="1y", progress=False)['Close']
+            if isinstance(sp_data.columns, pd.MultiIndex): sp_data.columns = sp_data.columns.get_level_values(0)
+            opps = []
+            for t in sp_data.columns:
+                if t not in portfolio_list:
+                    p = sp_data[t].ffill(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
+                    if rs > 0.12: d = get_company_static_info(t); opps.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs})
+            
+            df_opps = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15)
+            st.table(df_opps)
+            
+            # --- COPY PASTE FIELD ---
+            st.divider()
+            st.subheader("📋 New Opportunities (Copy-Paste)")
+            st.info("Kopiere nur die neuen Leader, die noch nicht in deiner Watchlist sind:")
+            new_ticks_only = [t for t in df_opps['Ticker'].tolist() if t not in portfolio_list]
+            st.code(", ".join(new_ticks_only), language="text")
 
-with tab3:
-    sel_t = st.selectbox("Deep Dive:", portfolio_list)
-    if sel_t and sel_t in all_data.columns:
-        df_c = yf.download(sel_t, period="1y", progress=False)
+with t3:
+    sel = st.selectbox("Deep Dive Asset:", portfolio_list)
+    if sel:
+        df_c = yf.download(sel, period="1y", progress=False)
         if isinstance(df_c.columns, pd.MultiIndex): df_c.columns = df_c.columns.get_level_values(0)
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
+        df_c['SMA50'] = df_c['Close'].rolling(50).mean(); df_c['SMA200'] = df_c['Close'].rolling(200).mean()
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
         fig.add_trace(go.Candlestick(x=df_c.index, open=df_c['Open'], high=df_c['High'], low=df_c['Low'], close=df_c['Close'], name="Price"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_c.index, y=df_c['Close'].rolling(200).mean(), line=dict(color='red'), name="SMA 200"), row=1, col=1)
-        rs_l = calc_rs_stable(df_c['Close'], benchmark.reindex(df_c.index).ffill())
-        fig.add_trace(go.Scatter(x=rs_l.index, y=rs_l, fill='tozeroy', line=dict(color='lime'), name="RS"), row=2, col=1)
-        fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False); st.plotly_chart(fig, width='stretch')
+        fig.add_trace(go.Scatter(x=df_c.index, y=df_c['SMA50'], line=dict(color='orange'), name="SMA 50"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_c.index, y=df_c['SMA200'], line=dict(color='red'), name="SMA 200"), row=1, col=1)
+        rs_l = calc_rs_stable(df_c['Close'], bm_prices_full.reindex(df_c.index).ffill())
+        fig.add_trace(go.Scatter(x=rs_l.index, y=rs_l, fill='tozeroy', line=dict(color='lime'), name="RS Score"), row=2, col=1)
+        fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False); st.plotly_chart(fig, width='stretch')
 
-with tab4:
-    col_a, col_c = st.columns(2)
-    with col_a: cap_start = st.number_input("Seed Capital (USD):", value=10000)
-    with col_c: n_stocks = st.slider("Positions:", 3, 10, 5)
-    if st.button("🧪 Execute Backtest"):
-        with st.spinner("Calculating..."):
-            bt_ticks = portfolio_list if bt_univ == "Watchlist" else get_sp500_tickers()
-            s_d, e_d = f"{start_year}-01-01", f"{end_year}-12-31"
-            s_p = (datetime.strptime(s_d, "%Y-%m-%d") - timedelta(days=450)).strftime("%Y-%m-%d")
-            bm_f = yf.download("^GSPC", start=s_p, end=e_d, progress=False)['Close']
-            if isinstance(bm_f, pd.DataFrame): bm_f = bm_f.iloc[:, 0]
-            bt_d = yf.download(bt_ticks, start=s_p, end=e_d, progress=False)['Close']
+with t4:
+    col_c1, col_c2 = st.columns(2)
+    cap_in = col_c1.number_input("Backtest Capital (USD):", value=10000); n_st = col_c2.slider("Positions:", 3, 10, 5)
+    if st.button("🧪 Execute Advanced Backtest"):
+        with st.spinner("Processing History..."):
+            ticks_bt = portfolio_list if bt_univ_choice == "Watchlist" else get_sp500_list()
+            s_p = (datetime.strptime(f"{bt_s_year}-01-01", "%Y-%m-%d") - timedelta(days=450)).strftime("%Y-%m-%d")
+            bt_d = yf.download(ticks_bt + ["^GSPC"], start=s_p, end=f"{bt_e_year}-12-31", progress=False)['Close']
             if isinstance(bt_d.columns, pd.MultiIndex): bt_d.columns = bt_d.columns.get_level_values(0)
-            common = bt_d.index.intersection(bm_f.index); bt_d, bm_f = bt_d.loc[common].ffill(), bm_f.loc[common].ffill()
-            rs_h = pd.DataFrame(index=bt_d.index)
-            for t in bt_ticks:
-                if t in bt_d.columns: rs_h[t] = calc_rs_stable(bt_d[t], bm_f)
-            t_d = bt_d.loc[s_d:e_d].groupby(pd.Grouper(freq=f'{hold_period}ME')).apply(lambda x: x.index[-1] if not x.empty else None).dropna()
-            c, c_h, t_l, f_dt = cap_start, [], [], None
+            bt_d = bt_d.ffill(); bm_f = bt_d["^GSPC"]; rs_h = pd.DataFrame(index=bt_d.index)
+            for t in ticks_bt:
+                if t in bt_d.columns and t != "^GSPC": rs_h[t] = calc_rs_stable(bt_d[t], bm_f)
+            t_d = bt_d.loc[f"{bt_s_year}-01-01":].groupby(pd.Grouper(freq=f'{hold_mo_val}ME')).apply(lambda x: x.index[-1] if not x.empty else None).dropna()
+            c, c_h, t_l, f_dt = cap_in, [], [], None
             for i in range(len(t_d)-1):
-                cur, nxt = t_d[i], t_d[i+1]; is_bull = bm_f.loc[cur] > bm_f.rolling(200).mean().loc[cur]
-                exp = 1.0 if is_bull else 0.2; rank = rs_h.loc[cur].dropna().sort_values(ascending=False)
-                if len(rank) < n_stocks: continue
+                cur, nxt = t_d[i], t_d[i+1]; is_bul = bm_f.loc[cur] > bm_f.rolling(200).mean().loc[cur]
+                exp = 1.0 if is_bul else 0.2; rank = rs_h.loc[cur].dropna().sort_values(ascending=False).head(n_st)
                 if f_dt is None: f_dt = cur
-                sel = rank.head(n_stocks).index.tolist(); cash_p_s = (c * exp / n_stocks) * 0.9988
-                p_r, det = [], []
-                for tkr in sel:
-                    b_p = bt_d.loc[cur, tkr]; d_p = bt_d.loc[cur:nxt, tkr]
-                    if d_p.min() <= b_p * (1-sl_pct/100): ex_p, stt = b_p * (1-sl_pct/100), "🚨SL"
-                    else: ex_p, stt = d_p.iloc[-1], "OK"
-                    p_r.append(cash_p_s * (ex_p / b_p)); det.append(f"{tkr}(In:{b_p:.1f}/Out:{ex_p:.1f}/{ex_p/b_p-1:+.1%}/{stt})")
+                sel_tk = rank.index.tolist(); p_r, det = [], []
+                for tk in sel_tk:
+                    bp = bt_d.loc[cur, tk]; dp = bt_d.loc[cur:nxt, tk]
+                    if dp.min() <= bp * (1-sl_input_val/100): ep, stt = bp * (1-sl_input_val/100), "🚨SL"
+                    else: ep, stt = dp.iloc[-1], "OK"
+                    p_r.append((c*exp/n_st)*0.9988*(ep/bp)); det.append(f"{tk}(In:{bp:.1f}/Out:{ep:.1f}/{ep/bp-1:+.1%}/{stt})")
                 c_pv = c; c = sum(p_r) + (c * (1-exp))
                 s_pf, b_pf = (c/c_pv-1)*100, (bm_f.loc[nxt]/bm_f.loc[cur]-1)*100
-                c_h.append({"Date": nxt, "Strategy": c}); t_l.append({"Date": cur.date(), "Regime": "BULL" if is_bull else "BEAR", "Trades": " | ".join(det), "Strat%": s_pf, "S&P500%": b_pf, "Alpha%": s_pf-b_pf, "Value": c})
+                c_h.append({"Date": nxt, "Strategy": c, "Market": (bm_f.loc[nxt]/bm_f.loc[f_dt])*cap_in})
+                t_l.append({"Date": cur.date(), "Regime": "BULL" if is_bul else "BEAR", "Trades": " | ".join(det), "Strat%": s_pf, "S&P500%": b_pf, "Alpha%": s_pf-b_pf, "Value": c})
             if c_h:
-                res = pd.DataFrame(c_h).set_index("Date"); st.metric("Final Value", f"{c:,.0f} USD", f"{(c/cap_start-1)*100:.1f}%")
-                fig_bt = go.Figure(); fig_bt.add_trace(go.Scatter(x=res.index, y=res['Strategy'], name="Strategy", line=dict(color='lime', width=3))); fig_bt.add_trace(go.Scatter(x=res.index, y=(bm_f.reindex(res.index)/bm_f.loc[f_dt])*cap_start, name="S&P 500", line=dict(color='gray', dash='dash')))
-                st.plotly_chart(fig_bt, width='stretch'); log_df = pd.DataFrame(t_l).sort_values(by="Date", ascending=False)
+                res = pd.DataFrame(c_h).set_index("Date"); m_dd_s = ((res['Strategy'] - res['Strategy'].cummax())/res['Strategy'].cummax()).min()*100; m_dd_m = ((res['Market'] - res['Market'].cummax())/res['Market'].cummax()).min()*100
+                m1, m2, m3 = st.columns(3); m1.metric("Final Capital", f"{c:,.0f} USD"); m2.metric("Max DD Strat", f"{m_dd_s:.1f}%", delta_color="inverse"); m3.metric("Max DD Index", f"{m_dd_m:.1f}%")
+                fig_p = go.Figure(); fig_p.add_trace(go.Scatter(x=res.index, y=res['Strategy'], name="Strategy", line=dict(color='lime', width=3))); fig_p.add_trace(go.Scatter(x=res.index, y=res['Market'], name="S&P 500", line=dict(color='gray', dash='dash')))
+                st.plotly_chart(fig_p, width='stretch'); log_df = pd.DataFrame(t_l).sort_values(by="Date", ascending=False)
                 st.dataframe(log_df.style.map(lambda x: 'background-color: #238636; color: white' if str(x) == "BULL" else 'background-color: #da3633; color: white' if str(x) == "BEAR" else '', subset=['Regime']).map(lambda x: 'color: #238636; font-weight: bold' if (isinstance(x, float) and x > 0) else 'color: #da3633' if (isinstance(x, float) and x < 0) else '', subset=['Alpha%']).format(subset=['Strat%', 'S&P500%', 'Alpha%'], formatter="{:+.2f}%").format(subset=['Value'], formatter="{:,.0f}"), width='stretch', hide_index=True)
 
-with tab5:
-    st.header("📖 Institutional Strategy Guide")
-    st.markdown("""
-    ### 1. Relative Strength (RS) Engine
-    We buy momentum leaders. The Mansfield RS Score identifies stocks outperforming the S&P 500. Smart money flows into these assets over weeks.
-    ### 2. Market Regime & FOMC
-    - **Bull Markets (🟢):** FED is neutral/supportive. S&P 500 > SMA 200. Maximize risk (100% Exposure).
-    - **Bear Markets (🔴):** FED is aggressive/hostile. S&P 500 < SMA 200. Strategy shifts to 80% Cash.
-    ### 3. Risk Protocols
-    - **Sector Mix:** Max 2 stocks per industry group to avoid clustering risk.
-    - **Stop Loss:** 15% automatic exit protects the principal.
-    ### 4. 2025 FOMC Tracker
-    - **March 18-19:** Watch for Dot Plot changes.
-    - **May 6-7 / June 17-18:** Interest Rate Decisions. 
-    """)
-    st.markdown(f'<div class="disclaimer">⚠️ **LEGAL NOTICE:** Not financial advice. Investing involves risk. Past performance is no guarantee of results. © {datetime.now().year} Manuel Kössler.</div>', unsafe_allow_html=True)
+with t5:
+    st.header("📈 Market Intelligence Hub 2025")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Saisonaler Outlook")
+        st.markdown(f"<div class='outlook-card'><b>Aktueller Monat: {s_t}</b><br>{s_d}<br><br><b>Roadmap:</b> Momentum-Trader profitieren historisch am meisten im Zeitraum Nov-April. Der Zeitraum Mai-Oktober erfordert engere Stops.</div>", unsafe_allow_html=True)
+    with col2:
+        st.subheader("Wichtige Termine 2025")
+        events = [("März 12", "CPI Inflationsdaten"), ("März 19", "FOMC Zinsentscheid & Dot Plot"), ("April 04", "Arbeitsmarktbericht (NFP)"), ("Mai 01", "PCE Preisindex (FED Favorit)")]
+        for date, event in events:
+            st.markdown(f"<div class='calendar-event'><b>{date}:</b> {event}</div>", unsafe_allow_html=True)
+    st.markdown(f'<div class="disclaimer">⚠️ LEGAL NOTICE: Not financial advice. Investing involves risk of loss. © {datetime.now().year} Manuel Kössler.</div>', unsafe_allow_html=True)
