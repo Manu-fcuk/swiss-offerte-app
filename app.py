@@ -5,10 +5,11 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
+import time
 from datetime import datetime, timedelta
 
 # --- 1. SETUP & THEME ---
-st.set_page_config(page_title="Alpha Terminal Pro v11.3", layout="wide")
+st.set_page_config(page_title="Alpha Terminal Pro v11.6", layout="wide")
 
 st.markdown("""
     <style>
@@ -29,11 +30,16 @@ st.markdown("""
 # --- 2. CORE ENGINE FUNCTIONS ---
 
 @st.cache_data(ttl=86400)
-def get_company_static_info(ticker):
+def get_company_details_v2(ticker):
     try:
         t = yf.Ticker(ticker)
         inf = t.info
-        return {"Name": inf.get('longName', ticker), "Sector": inf.get('sector', 'N/A')}
+        name = inf.get('longName', ticker)
+        sector = inf.get('sector', 'N/A')
+        if sector == 'N/A':
+            time.sleep(0.05)
+            sector = t.info.get('sector', 'N/A')
+        return {"Name": name, "Sector": sector}
     except: return {"Name": ticker, "Sector": "N/A"}
 
 def calc_rs_stable(prices, bm_prices):
@@ -77,12 +83,12 @@ def get_market_intelligence(bm_prices):
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2620/2620611.png", width=60)
-    st.title("Alpha Terminal v11.3")
+    st.title("Alpha Master v11.6")
     u_input = st.text_area("Watchlist Tickers:", value="GOOG, AAPL, AMZN, WMT, T, META, NVDA, TSLA, MSFT, LLY, GE, PYPL, SNAP, ASML, PLTR", height=150)
     portfolio_list = [x.strip().upper() for x in u_input.split(",") if x.strip()]
     st.divider()
-    bt_s_year = st.number_input("Backtest Start", 2015, 2024, 2021)
-    bt_e_year = st.number_input("Backtest End", 2016, 2026, 2025)
+    bt_s_year = st.number_input("Backtest Start Year", 2015, 2024, 2021)
+    bt_e_year = st.number_input("Backtest End Year", 2016, 2026, 2025)
     bt_univ_choice = st.radio("Backtest Universe", ["Watchlist", "S&P 500 Index"])
     hold_mo_val = st.select_slider("Holding (Mo)", options=[1, 2, 3, 4, 6], value=1)
     sl_input_val = st.slider("Stop Loss %", 5, 30, 15)
@@ -95,10 +101,12 @@ with st.spinner("Synchronisiere Terminal-Daten..."):
     if isinstance(live_port_prices.columns, pd.MultiIndex): live_port_prices.columns = live_port_prices.columns.get_level_values(0)
     live_port_prices = live_port_prices.ffill()
 
-# --- 5. HEADER ---
+# --- 5. HEADER & INTELLIGENCE ---
 m_ph, m_adv, s_t, s_d, m_sent = get_market_intelligence(bm_prices_full)
 m_bull = bm_prices_full.iloc[-1] > bm_prices_full.rolling(200).mean().iloc[-1]
+
 st.markdown(f'<div class="status-box" style="background-color: {"#238636" if m_bull else "#da3633"}; color: white;">MARKET STATUS: {"BULLISH 🟢" if m_bull else "BEARISH 🔴"} | SENTIMENT: {m_sent}</div>', unsafe_allow_html=True)
+
 c_i1, c_i2, c_i3 = st.columns(3)
 with c_i1: st.markdown(f'<div class="intel-box" style="border-color: #238636;"><b>🧠 Phase:</b><br>{m_ph}<br><small>{m_adv}</small></div>', unsafe_allow_html=True)
 with c_i2: st.markdown(f'<div class="intel-box" style="border-color: #f1e05a;"><b>📅 Saisonalität:</b><br>{s_t}<br><small>{s_d}</small></div>', unsafe_allow_html=True)
@@ -108,25 +116,30 @@ with c_i3: st.markdown(f'<div class="intel-box" style="border-color: #388bfd;"><
 t1, t2, t3, t4, t5 = st.tabs(["🎯 Action Plan", "🔭 Scanner", "📈 Charts", "🧪 Backtest", "📖 Strategy & Calendar"])
 
 with t1:
+    st.subheader("Portfolio Action Radar")
     res = []
-    for t in portfolio_list:
+    bar = st.progress(0)
+    for i, t in enumerate(portfolio_list):
         if t in live_port_prices.columns:
             p = live_port_prices[t].dropna(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
-            d = get_company_static_info(t)
+            d = get_company_details_v2(t)
             res.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs, "Action": "🟢 HOLD" if rs > 0 else "🔴 SELL"})
+        bar.progress((i + 1) / len(portfolio_list))
     st.dataframe(pd.DataFrame(res).sort_values(by="RS Score", ascending=False).style.background_gradient(subset=['RS Score'], cmap='RdYlGn'), width='stretch', hide_index=True)
 
 with t2:
+    st.subheader("🔭 S&P 500 Leader Scanner")
     if st.button("🚀 Run S&P 500 Scan"):
-        sp_all = get_sp500_list(); sp_data = yf.download(sp_all, period="1y", progress=False)['Close']
-        if isinstance(sp_data.columns, pd.MultiIndex): sp_data.columns = sp_data.columns.get_level_values(0)
-        opps = []
-        for t in sp_data.columns:
-            if t not in portfolio_list:
-                p = sp_data[t].ffill(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
-                if rs > 0.12: d = get_company_static_info(t); opps.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs})
-        df_opps = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15); st.table(df_opps)
-        st.code(", ".join([t for t in pd.DataFrame(opps)['Ticker'].tolist() if t not in portfolio_list]), language="text")
+        with st.spinner("Analyzing leaders..."):
+            sp_all = get_sp500_list(); sp_data = yf.download(sp_all, period="1y", progress=False)['Close']
+            if isinstance(sp_data.columns, pd.MultiIndex): sp_data.columns = sp_data.columns.get_level_values(0)
+            opps = []
+            for t in sp_data.columns:
+                if t not in portfolio_list:
+                    p = sp_data[t].ffill(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
+                    if rs > 0.12: d = get_company_details_v2(t); opps.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs})
+            df_opps = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15); st.table(df_opps)
+            st.code(", ".join([t for t in df_opps['Ticker'].tolist() if t not in portfolio_list]), language="text")
 
 with t3:
     sel = st.selectbox("Deep Dive Asset:", portfolio_list)
@@ -166,7 +179,8 @@ with t4:
                     if dp.min() <= bp * (1-sl_input_val/100): ep, stt = bp * (1-sl_input_val/100), "🚨SL"
                     else: ep, stt = dp.iloc[-1], "OK"
                     p_r.append((c*exp/n_st)*0.9988*(ep/bp))
-                    det.append(f"{tk}({ep/bp-1:+.1%}/{stt})")
+                    t_perf = (ep/bp-1)*100; emoji = "🟢" if t_perf > 0 else "🔴"
+                    det.append(f"{tk}({emoji}{t_perf:+.1f}%, In:{bp:.1f}/Out:{ep:.1f}, {stt})")
                 c_pv = c; c = sum(p_r) + (c * (1-exp))
                 s_pf, b_pf = (c/c_pv-1)*100, (bm_f.loc[nxt]/bm_f.loc[cur]-1)*100
                 c_h.append({"Date": nxt, "Strategy": c, "Market": (bm_f.loc[nxt]/bm_f.loc[f_dt])*cap_in})
@@ -176,12 +190,10 @@ with t4:
                 def m_dd(s): return ((s - s.cummax()) / s.cummax()).min() * 100
                 strat_total_perf = (c / cap_in - 1) * 100
                 bm_total_perf = (res['Market'].iloc[-1] / cap_in - 1) * 100
-
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Final Capital", f"{c:,.0f} USD", f"{strat_total_perf:+.1f}% Gesamt")
-                m2.metric("Market Performance", f"{bm_total_perf:+.1f}%", f"Alpha: {strat_total_perf - bm_total_perf:+.1f}%")
-                m3.metric("Max Drawdown Strat", f"{m_dd(res['Strategy']):.1f}%", delta_color="inverse")
-                
+                m1.metric("Final Capital", f"{c:,.0f} USD", f"{strat_total_perf:+.1f}% Total")
+                m2.metric("Index Performance", f"{bm_total_perf:+.1f}%", f"Alpha: {strat_total_perf - bm_total_perf:+.1f}%")
+                m3.metric("Max DD Strategy", f"{m_dd(res['Strategy']):.1f}%", delta_color="inverse")
                 fig_p = go.Figure(); fig_p.add_trace(go.Scatter(x=res.index, y=res['Strategy'], name="Strategy", line=dict(color='lime', width=3))); fig_p.add_trace(go.Scatter(x=res.index, y=res['Market'], name="S&P 500 Index", line=dict(color='gray', dash='dash')))
                 st.plotly_chart(fig_p, width='stretch')
                 st.dataframe(pd.DataFrame(t_l).sort_values(by="Date", ascending=False).style.map(lambda x: 'background-color: #238636; color: white' if str(x) == "BULL" else 'background-color: #da3633; color: white' if str(x) == "BEAR" else '', subset=['Regime']).map(lambda x: 'color: #238636; font-weight: bold' if (isinstance(x, float) and x > 0) else 'color: #da3633' if (isinstance(x, float) and x < 0) else '', subset=['Alpha%']).format(subset=['Strat%', 'S&P500%', 'Alpha%'], formatter="{:+.2f}%").format(subset=['Value'], formatter="{:,.0f}"), width='stretch', hide_index=True)
