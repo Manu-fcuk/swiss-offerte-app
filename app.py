@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- 1. SETUP & THEME ---
-st.set_page_config(page_title="Alpha Terminal Pro v11.6", layout="wide")
+st.set_page_config(page_title="Alpha Terminal Pro v11.9.3", layout="wide")
 
 st.markdown("""
     <style>
@@ -30,16 +30,11 @@ st.markdown("""
 # --- 2. CORE ENGINE FUNCTIONS ---
 
 @st.cache_data(ttl=86400)
-def get_company_details_v2(ticker):
+def get_company_static_info(ticker):
     try:
         t = yf.Ticker(ticker)
         inf = t.info
-        name = inf.get('longName', ticker)
-        sector = inf.get('sector', 'N/A')
-        if sector == 'N/A':
-            time.sleep(0.05)
-            sector = t.info.get('sector', 'N/A')
-        return {"Name": name, "Sector": sector}
+        return {"Name": inf.get('longName', ticker), "Sector": inf.get('sector', 'N/A')}
     except: return {"Name": ticker, "Sector": "N/A"}
 
 def calc_rs_stable(prices, bm_prices):
@@ -83,12 +78,12 @@ def get_market_intelligence(bm_prices):
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2620/2620611.png", width=60)
-    st.title("Alpha Master v11.6")
+    st.title("Alpha Master v11.9.3")
     u_input = st.text_area("Watchlist Tickers:", value="GOOG, AAPL, AMZN, WMT, T, META, NVDA, TSLA, MSFT, LLY, GE, PYPL, SNAP, ASML, PLTR", height=150)
     portfolio_list = [x.strip().upper() for x in u_input.split(",") if x.strip()]
     st.divider()
-    bt_s_year = st.number_input("Backtest Start Year", 2015, 2024, 2021)
-    bt_e_year = st.number_input("Backtest End Year", 2016, 2026, 2025)
+    bt_s_year = st.number_input("Backtest Start", 2015, 2024, 2021)
+    bt_e_year = st.number_input("Backtest End", 2016, 2026, 2025)
     bt_univ_choice = st.radio("Backtest Universe", ["Watchlist", "S&P 500 Index"])
     hold_mo_val = st.select_slider("Holding (Mo)", options=[1, 2, 3, 4, 6], value=1)
     sl_input_val = st.slider("Stop Loss %", 5, 30, 15)
@@ -101,7 +96,7 @@ with st.spinner("Synchronisiere Terminal-Daten..."):
     if isinstance(live_port_prices.columns, pd.MultiIndex): live_port_prices.columns = live_port_prices.columns.get_level_values(0)
     live_port_prices = live_port_prices.ffill()
 
-# --- 5. HEADER & INTELLIGENCE ---
+# --- 5. HEADER ---
 m_ph, m_adv, s_t, s_d, m_sent = get_market_intelligence(bm_prices_full)
 m_bull = bm_prices_full.iloc[-1] > bm_prices_full.rolling(200).mean().iloc[-1]
 
@@ -116,30 +111,27 @@ with c_i3: st.markdown(f'<div class="intel-box" style="border-color: #388bfd;"><
 t1, t2, t3, t4, t5 = st.tabs(["🎯 Action Plan", "🔭 Scanner", "📈 Charts", "🧪 Backtest", "📖 Strategy & Calendar"])
 
 with t1:
-    st.subheader("Portfolio Action Radar")
     res = []
     bar = st.progress(0)
     for i, t in enumerate(portfolio_list):
         if t in live_port_prices.columns:
             p = live_port_prices[t].dropna(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
-            d = get_company_details_v2(t)
-            res.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs, "Action": "🟢 HOLD" if rs > 0 else "🔴 SELL"})
-        bar.progress((i + 1) / len(portfolio_list))
-    st.dataframe(pd.DataFrame(res).sort_values(by="RS Score", ascending=False).style.background_gradient(subset=['RS Score'], cmap='RdYlGn'), width='stretch', hide_index=True)
+            rsi_val = calc_rsi(p).iloc[-1]
+            d = get_company_static_info(t)
+            res.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs, "RSI(14)": rsi_val, "Action": "🟢 HOLD" if rs > 0 else "🔴 SELL"})
+    st.dataframe(pd.DataFrame(res).sort_values(by="RS Score", ascending=False).style.background_gradient(subset=['RS Score'], cmap='RdYlGn').format(subset=['RS Score', 'RSI(14)'], formatter="{:.2f}"), width='stretch', hide_index=True)
 
 with t2:
-    st.subheader("🔭 S&P 500 Leader Scanner")
     if st.button("🚀 Run S&P 500 Scan"):
-        with st.spinner("Analyzing leaders..."):
-            sp_all = get_sp500_list(); sp_data = yf.download(sp_all, period="1y", progress=False)['Close']
-            if isinstance(sp_data.columns, pd.MultiIndex): sp_data.columns = sp_data.columns.get_level_values(0)
-            opps = []
-            for t in sp_data.columns:
-                if t not in portfolio_list:
-                    p = sp_data[t].ffill(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
-                    if rs > 0.12: d = get_company_details_v2(t); opps.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs})
-            df_opps = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15); st.table(df_opps)
-            st.code(", ".join([t for t in df_opps['Ticker'].tolist() if t not in portfolio_list]), language="text")
+        sp_all = get_sp500_list(); sp_data = yf.download(sp_all, period="1y", progress=False)['Close']
+        if isinstance(sp_data.columns, pd.MultiIndex): sp_data.columns = sp_data.columns.get_level_values(0)
+        opps = []
+        for t in sp_data.columns:
+            if t not in portfolio_list:
+                p = sp_data[t].ffill(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
+                if rs > 0.12: d = get_company_static_info(t); opps.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs})
+        df_o = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15); st.table(df_o)
+        st.code(", ".join([t for t in pd.DataFrame(opps)['Ticker'].tolist() if t not in portfolio_list]), language="text")
 
 with t3:
     sel = st.selectbox("Deep Dive Asset:", portfolio_list)
@@ -164,7 +156,9 @@ with t4:
             s_p = (datetime.strptime(f"{bt_s_year}-01-01", "%Y-%m-%d") - timedelta(days=450)).strftime("%Y-%m-%d")
             bt_d = yf.download(ticks_bt + ["^GSPC"], start=s_p, end=f"{bt_e_year}-12-31", progress=False)['Close']
             if isinstance(bt_d.columns, pd.MultiIndex): bt_d.columns = bt_d.columns.get_level_values(0)
-            bt_d = bt_d.ffill(); bm_f = bt_d["^GSPC"]; rs_h = pd.DataFrame(index=bt_d.index)
+            bt_d = bt_d.ffill(); bm_f = bt_d["^GSPC"]
+            common_idx = bt_d.index.intersection(bm_f.index); bt_d, bm_f = bt_d.loc[common_idx], bm_f.loc[common_idx]
+            rs_h = pd.DataFrame(index=bt_d.index)
             for t in ticks_bt:
                 if t in bt_d.columns and t != "^GSPC": rs_h[t] = calc_rs_stable(bt_d[t], bm_f)
             t_d = bt_d.loc[f"{bt_s_year}-01-01":].groupby(pd.Grouper(freq=f'{hold_mo_val}ME')).apply(lambda x: x.index[-1] if not x.empty else None).dropna()
@@ -172,31 +166,34 @@ with t4:
             for i in range(len(t_d)-1):
                 cur, nxt = t_d[i], t_d[i+1]; is_bul = bm_f.loc[cur] > bm_f.rolling(200).mean().loc[cur]
                 exp = 1.0 if is_bul else 0.2; rank = rs_h.loc[cur].dropna().sort_values(ascending=False).head(n_st)
+                if len(rank) < n_st: continue
                 if f_dt is None: f_dt = cur
-                sel_tk = rank.index.tolist(); p_r, det = [], []
+                sel_tk = rank.index.tolist(); p_r, det = [] , []
                 for tk in sel_tk:
-                    bp = bt_d.loc[cur, tk]; dp = bt_d.loc[cur:nxt, tk]
-                    if dp.min() <= bp * (1-sl_input_val/100): ep, stt = bp * (1-sl_input_val/100), "🚨SL"
-                    else: ep, stt = dp.iloc[-1], "OK"
-                    p_r.append((c*exp/n_st)*0.9988*(ep/bp))
-                    t_perf = (ep/bp-1)*100; emoji = "🟢" if t_perf > 0 else "🔴"
-                    det.append(f"{tk}({emoji}{t_perf:+.1f}%, In:{bp:.1f}/Out:{ep:.1f}, {stt})")
+                    bp, dp = bt_d.loc[cur, tk], bt_d.loc[cur:nxt, tk]
+                    if dp.min() <= bp * (1-sl_input_val/100): ex_p, stt = bp * (1-sl_input_val/100), "🚨SL"
+                    else: ex_p, stt = dp.iloc[-1], "OK"
+                    
+                    # --- MATHEMATICAL FIX FOR STOCK PERCENTAGE ---
+                    # Hier wird die Rendite EXAKT auf den Kaufpreis der Aktie (bp) gerechnet
+                    # Formel: (ExitPreis / Kaufpreis - 1) * 100
+                    stock_gain_pct = (ex_p / bp - 1) * 100
+                    
+                    p_r.append((c*exp/n_st)*0.9988*(ex_p/bp))
+                    emoji = "🟢" if stock_gain_pct > 0 else "🔴"
+                    det.append(f"{tk}({emoji}{stock_gain_pct:+.1f}%, In:{bp:.1f}/Out:{ex_p:.1f}, {stt})")
+                
                 c_pv = c; c = sum(p_r) + (c * (1-exp))
                 s_pf, b_pf = (c/c_pv-1)*100, (bm_f.loc[nxt]/bm_f.loc[cur]-1)*100
                 c_h.append({"Date": nxt, "Strategy": c, "Market": (bm_f.loc[nxt]/bm_f.loc[f_dt])*cap_in})
                 t_l.append({"Date": cur.date(), "Regime": "BULL" if is_bul else "BEAR", "Trades": " | ".join(det), "Strat%": s_pf, "S&P500%": b_pf, "Alpha%": s_pf-b_pf, "Value": c})
             if c_h:
-                res = pd.DataFrame(c_h).set_index("Date")
-                def m_dd(s): return ((s - s.cummax()) / s.cummax()).min() * 100
-                strat_total_perf = (c / cap_in - 1) * 100
-                bm_total_perf = (res['Market'].iloc[-1] / cap_in - 1) * 100
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Final Capital", f"{c:,.0f} USD", f"{strat_total_perf:+.1f}% Total")
-                m2.metric("Index Performance", f"{bm_total_perf:+.1f}%", f"Alpha: {strat_total_perf - bm_total_perf:+.1f}%")
-                m3.metric("Max DD Strategy", f"{m_dd(res['Strategy']):.1f}%", delta_color="inverse")
-                fig_p = go.Figure(); fig_p.add_trace(go.Scatter(x=res.index, y=res['Strategy'], name="Strategy", line=dict(color='lime', width=3))); fig_p.add_trace(go.Scatter(x=res.index, y=res['Market'], name="S&P 500 Index", line=dict(color='gray', dash='dash')))
-                st.plotly_chart(fig_p, width='stretch')
-                st.dataframe(pd.DataFrame(t_l).sort_values(by="Date", ascending=False).style.map(lambda x: 'background-color: #238636; color: white' if str(x) == "BULL" else 'background-color: #da3633; color: white' if str(x) == "BEAR" else '', subset=['Regime']).map(lambda x: 'color: #238636; font-weight: bold' if (isinstance(x, float) and x > 0) else 'color: #da3633' if (isinstance(x, float) and x < 0) else '', subset=['Alpha%']).format(subset=['Strat%', 'S&P500%', 'Alpha%'], formatter="{:+.2f}%").format(subset=['Value'], formatter="{:,.0f}"), width='stretch', hide_index=True)
+                res = pd.DataFrame(c_h).set_index("Date"); m_dd_s = ((res['Strategy'] - res['Strategy'].cummax())/res['Strategy'].cummax()).min()*100
+                strat_total = (c / cap_in - 1) * 100; index_total = (res['Market'].iloc[-1] / cap_in - 1) * 100
+                m1, m2, m3 = st.columns(3); m1.metric("Final Capital", f"{c:,.0f} USD", f"{strat_total:+.1f}%"); m2.metric("Index | Alpha", f"{index_total:+.1f}%", f"Alpha: {strat_total-index_total:+.1f}%"); m3.metric("Max DD Strat", f"{m_dd_s:.1f}%", delta_color="inverse")
+                fig_p = go.Figure(); fig_p.add_trace(go.Scatter(x=res.index, y=res['Strategy'], name="Strategy", line=dict(color='lime', width=3))); fig_p.add_trace(go.Scatter(x=res.index, y=res['Market'], name="S&P 500", line=dict(color='gray', dash='dash')))
+                st.plotly_chart(fig_p, width='stretch'); log_df = pd.DataFrame(t_l).sort_values(by="Date", ascending=False)
+                st.dataframe(log_df.style.map(lambda x: 'background-color: #238636; color: white' if str(x) == "BULL" else 'background-color: #da3633; color: white' if str(x) == "BEAR" else '', subset=['Regime']).map(lambda x: 'color: #238636; font-weight: bold' if (isinstance(x, float) and x > 0) else 'color: #da3633' if (isinstance(x, float) and x < 0) else '', subset=['Alpha%']).format(subset=['Strat%', 'S&P500%', 'Alpha%'], formatter="{:+.2f}%").format(subset=['Value'], formatter="{:,.0f}"), width='stretch', hide_index=True)
 
 with t5:
     st.header("📈 Market Intelligence Hub 2025")
