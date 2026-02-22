@@ -41,7 +41,7 @@ def calc_rs_stable(prices, bm_prices):
     combined = pd.concat([prices, bm_prices], axis=1).ffill().dropna()
     if combined.empty: return pd.Series()
     combined.columns = ['Asset', 'BM']
-    ratio = combined['Asset'] / combined['BM']
+    ratio = combined['Asset'] / combined['BM'].replace(0, np.nan)
     return (ratio / ratio.rolling(window=50).mean()) - 1
 
 def calc_rsi(prices, window=14):
@@ -90,10 +90,11 @@ with st.sidebar:
 
 # --- 4. DATA FETCH ---
 with st.spinner("Synchronisiere Terminal-Daten..."):
-    bm_prices_full = yf.download("^GSPC", period="5y", progress=False)['Close']
+    bm_prices_full = yf.download("^GSPC", period="5y", progress=False, threads=False, auto_adjust=True)['Close']
     if isinstance(bm_prices_full, pd.DataFrame): bm_prices_full = bm_prices_full.iloc[:, 0]
-    live_port_prices = yf.download(portfolio_list, period="4y", progress=False)['Close']
-    if isinstance(live_port_prices.columns, pd.MultiIndex): live_port_prices.columns = live_port_prices.columns.get_level_values(0)
+    live_port_prices = yf.download(portfolio_list, period="4y", progress=False, threads=False, auto_adjust=True)['Close']
+    if isinstance(live_port_prices, pd.DataFrame) and isinstance(live_port_prices.columns, pd.MultiIndex): 
+        live_port_prices.columns = live_port_prices.columns.get_level_values(0)
     live_port_prices = live_port_prices.ffill()
 
 # --- 5. HEADER ---
@@ -114,36 +115,50 @@ with t1:
     res = []
     for t in portfolio_list:
         if t in live_port_prices.columns:
-            p = live_port_prices[t].dropna(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
-            rsi_val = calc_rsi(p).iloc[-1]
-            d = get_company_static_info(t)
-            res.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs, "RSI(14)": rsi_val, "Action": "🟢 HOLD" if rs > 0 else "🔴 SELL"})
-    st.dataframe(pd.DataFrame(res).sort_values(by="RS Score", ascending=False).style.background_gradient(subset=['RS Score'], cmap='RdYlGn').format(subset=['RS Score', 'RSI(14)'], formatter="{:.2f}"), width='stretch', hide_index=True)
+            p = live_port_prices[t].dropna()
+            rs_series = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill())
+            rsi_series = calc_rsi(p)
+            if not rs_series.empty and not rsi_series.empty:
+                rs = rs_series.iloc[-1]
+                rsi_val = rsi_series.iloc[-1]
+                d = get_company_static_info(t)
+                res.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs, "RSI(14)": rsi_val, "Action": "🟢 HOLD" if rs > 0 else "🔴 SELL"})
+    if res:
+        st.dataframe(pd.DataFrame(res).sort_values(by="RS Score", ascending=False).style.background_gradient(subset=['RS Score'], cmap='RdYlGn').format(subset=['RS Score', 'RSI(14)'], formatter="{:.2f}"), width='stretch', hide_index=True)
 
 with t2:
     if st.button("🚀 Run S&P 500 Scan"):
-        sp_all = get_sp500_list(); sp_data = yf.download(sp_all, period="1y", progress=False)['Close']
-        if isinstance(sp_data.columns, pd.MultiIndex): sp_data.columns = sp_data.columns.get_level_values(0)
-        opps = []
-        for t in sp_data.columns:
-            if t not in portfolio_list:
-                p = sp_data[t].ffill(); rs = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill()).iloc[-1]
-                if rs > 0.12: d = get_company_static_info(t); opps.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs})
-        df_o = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15); st.table(df_o)
-        st.code(", ".join([t for t in pd.DataFrame(opps)['Ticker'].tolist() if t not in portfolio_list]), language="text")
+        with st.spinner("Scanning S&P 500 Leaders..."):
+            sp_all = get_sp500_list(); sp_data = yf.download(sp_all, period="1y", progress=False, threads=False, auto_adjust=True)['Close']
+            if isinstance(sp_data, pd.DataFrame) and isinstance(sp_data.columns, pd.MultiIndex): 
+                sp_data.columns = sp_data.columns.get_level_values(0)
+            opps = []
+            for t in sp_data.columns:
+                if t not in portfolio_list:
+                    p = sp_data[t].ffill(); rs_series = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill())
+                    if not rs_series.empty and rs_series.iloc[-1] > 0.12: 
+                        d = get_company_static_info(t)
+                        opps.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs_series.iloc[-1]})
+            if opps:
+                df_o = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15); st.table(df_o)
+                st.code(", ".join([t for t in pd.DataFrame(opps)['Ticker'].tolist() if t not in portfolio_list]), language="text")
+            else:
+                st.info("Keine neuen Leader gefunden.")
 
 with t3:
     sel = st.selectbox("Deep Dive Asset:", portfolio_list)
     if sel:
-        df_c = yf.download(sel, period="1y", progress=False)
-        if isinstance(df_c.columns, pd.MultiIndex): df_c.columns = df_c.columns.get_level_values(0)
+        df_c = yf.download(sel, period="1y", progress=False, threads=False, auto_adjust=True)
+        if isinstance(df_c, pd.DataFrame) and isinstance(df_c.columns, pd.MultiIndex): 
+            df_c.columns = df_c.columns.get_level_values(0)
         df_c['SMA50'] = df_c['Close'].rolling(50).mean(); df_c['SMA200'] = df_c['Close'].rolling(200).mean()
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
         fig.add_trace(go.Candlestick(x=df_c.index, open=df_c['Open'], high=df_c['High'], low=df_c['Low'], close=df_c['Close'], name="Price"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_c.index, y=df_c['SMA50'], line=dict(color='orange'), name="SMA 50"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_c.index, y=df_c['SMA200'], line=dict(color='red'), name="SMA 200"), row=1, col=1)
         rs_l = calc_rs_stable(df_c['Close'], bm_prices_full.reindex(df_c.index).ffill())
-        fig.add_trace(go.Scatter(x=rs_l.index, y=rs_l, fill='tozeroy', line=dict(color='lime'), name="RS Score"), row=2, col=1)
+        if not rs_l.empty:
+            fig.add_trace(go.Scatter(x=rs_l.index, y=rs_l, fill='tozeroy', line=dict(color='lime'), name="RS Score"), row=2, col=1)
         fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False); st.plotly_chart(fig, width='stretch')
 
 with t4:
@@ -153,17 +168,22 @@ with t4:
         with st.spinner("Processing History..."):
             ticks_bt = portfolio_list if bt_univ_choice == "Watchlist" else get_sp500_list()
             s_p = (datetime.strptime(f"{bt_s_year}-01-01", "%Y-%m-%d") - timedelta(days=450)).strftime("%Y-%m-%d")
-            bt_d = yf.download(ticks_bt + ["^GSPC"], start=s_p, end=f"{bt_e_year}-12-31", progress=False)['Close']
-            if isinstance(bt_d.columns, pd.MultiIndex): bt_d.columns = bt_d.columns.get_level_values(0)
+            bt_d = yf.download([t for t in ticks_bt if t != "^GSPC"] + ["^GSPC"], start=s_p, end=f"{bt_e_year}-12-31", progress=False, threads=False, auto_adjust=True)['Close']
+            if isinstance(bt_d, pd.DataFrame) and isinstance(bt_d.columns, pd.MultiIndex): 
+                bt_d.columns = bt_d.columns.get_level_values(0)
             bt_d = bt_d.ffill(); bm_f = bt_d["^GSPC"]
             common_idx = bt_d.index.intersection(bm_f.index); bt_d, bm_f = bt_d.loc[common_idx], bm_f.loc[common_idx]
-            rs_h = pd.DataFrame(index=bt_d.index)
+            
+            rs_dict = {}
             for t in ticks_bt:
-                if t in bt_d.columns and t != "^GSPC": rs_h[t] = calc_rs_stable(bt_d[t], bm_f)
+                if t in bt_d.columns and t != "^GSPC": 
+                    rs_dict[t] = calc_rs_stable(bt_d[t], bm_f)
+            rs_h = pd.concat(rs_dict, axis=1)
+            
             t_d = bt_d.loc[f"{bt_s_year}-01-01":].groupby(pd.Grouper(freq=f'{hold_mo_val}ME')).apply(lambda x: x.index[-1] if not x.empty else None).dropna()
             c, c_h, t_l, f_dt = cap_in, [], [], None
             for i in range(len(t_d)-1):
-                cur, nxt = t_d[i], t_d[i+1]; is_bul = bm_f.loc[cur] > bm_f.rolling(200).mean().loc[cur]
+                cur, nxt = t_d.iloc[i], t_d.iloc[i+1]; is_bul = bm_f.loc[cur] > bm_f.rolling(200).mean().loc[cur]
                 exp = 1.0 if is_bul else 0.2; rank = rs_h.loc[cur].dropna().sort_values(ascending=False).head(n_st)
                 if len(rank) < n_st: continue
                 if f_dt is None: f_dt = cur
