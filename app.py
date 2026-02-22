@@ -90,16 +90,48 @@ with st.sidebar:
 
 # --- 4. DATA FETCH ---
 with st.spinner("Synchronisiere Terminal-Daten..."):
-    bm_prices_full = yf.download("^GSPC", period="5y", progress=False, threads=False, auto_adjust=True)['Close']
-    if isinstance(bm_prices_full, pd.DataFrame): bm_prices_full = bm_prices_full.iloc[:, 0]
-    live_port_prices = yf.download(portfolio_list, period="4y", progress=False, threads=False, auto_adjust=True)['Close']
-    if isinstance(live_port_prices, pd.DataFrame) and isinstance(live_port_prices.columns, pd.MultiIndex): 
-        live_port_prices.columns = live_port_prices.columns.get_level_values(0)
-    live_port_prices = live_port_prices.ffill()
+    try:
+        # Benchmark Data fetch
+        bm_data = yf.download("^GSPC", period="5y", progress=False, threads=False, auto_adjust=True)
+        if not bm_data.empty:
+            bm_prices_full = bm_data['Close']
+            if isinstance(bm_prices_full, pd.DataFrame): bm_prices_full = bm_prices_full.iloc[:, 0]
+        else:
+            bm_prices_full = pd.Series()
+            st.warning("Benchmark-Daten (^GSPC) konnten nicht geladen werden.")
+
+        # Portfolio Data fetch
+        port_data = yf.download(portfolio_list, period="4y", progress=False, threads=False, auto_adjust=True)
+        if not port_data.empty:
+            live_port_prices = port_data['Close']
+            if isinstance(live_port_prices, pd.DataFrame) and isinstance(live_port_prices.columns, pd.MultiIndex): 
+                live_port_prices.columns = live_port_prices.columns.get_level_values(0)
+            live_port_prices = live_port_prices.ffill()
+        else:
+            live_port_prices = pd.DataFrame(columns=portfolio_list)
+            st.warning("Portfolio-Daten konnten nicht geladen werden.")
+            
+    except Exception as e:
+        st.error(f"Kritischer Fehler beim Datendownload: {e}")
+        bm_prices_full = pd.Series()
+        live_port_prices = pd.DataFrame(columns=portfolio_list)
 
 # --- 5. HEADER ---
 m_ph, m_adv, s_t, s_d, m_sent = get_market_intelligence(bm_prices_full)
-m_bull = bm_prices_full.iloc[-1] > bm_prices_full.rolling(200).mean().iloc[-1]
+
+# Defensive Bull/Bear Status
+m_bull = False
+if not bm_prices_full.empty:
+    try:
+        # Fallback logic if less than 200 data points exist
+        if len(bm_prices_full) >= 200:
+            m_bull = bm_prices_full.iloc[-1] > bm_prices_full.rolling(200).mean().iloc[-1]
+        elif len(bm_prices_full) >= 50:
+            m_bull = bm_prices_full.iloc[-1] > bm_prices_full.rolling(50).mean().iloc[-1]
+        else:
+            m_bull = True # Default to positive if data is too short
+    except Exception:
+        m_bull = False
 
 st.markdown(f'<div class="status-box" style="background-color: {"#238636" if m_bull else "#da3633"}; color: white;">MARKET STATUS: {"BULLISH 🟢" if m_bull else "BEARISH 🔴"} | SENTIMENT: {m_sent}</div>', unsafe_allow_html=True)
 
