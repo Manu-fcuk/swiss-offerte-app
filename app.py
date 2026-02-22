@@ -160,8 +160,10 @@ with t1:
 
 with t2:
     if st.button("🚀 Run S&P 500 Scan"):
-        with st.spinner("Scanning S&P 500 Leaders..."):
-            sp_all = get_sp500_list(); sp_data = yf.download(sp_all, period="1y", progress=False, threads=False, auto_adjust=True)['Close']
+        with st.spinner("Scanning S&P 500 Leaders (Multithreaded)..."):
+            sp_all = get_sp500_list()
+            # Reduced period to 1y and enabled threads=True for performance
+            sp_data = yf.download(sp_all, period="1y", progress=False, threads=True, auto_adjust=True)['Close']
             if isinstance(sp_data, pd.DataFrame) and isinstance(sp_data.columns, pd.MultiIndex): 
                 sp_data.columns = sp_data.columns.get_level_values(0)
             opps = []
