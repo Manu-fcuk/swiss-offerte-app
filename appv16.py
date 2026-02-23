@@ -53,12 +53,26 @@ def calc_rsi(prices, window=14):
 
 @st.cache_data(ttl=3600)
 def get_sp500_list():
+    df = get_sp500_full_data()
+    return df['Symbol'].tolist()
+
+@st.cache_data(ttl=86400)
+def get_sp500_full_data():
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {'User-Agent': 'Mozilla/5.0'}
         df = pd.read_html(requests.get(url, headers=headers).text)[0]
-        return [t.replace('.', '-') for t in df['Symbol'].tolist()]
-    except: return ["NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "META"]
+        df['Symbol'] = df['Symbol'].str.replace('.', '-')
+        return df[['Symbol', 'Security', 'GICS Sector']]
+    except: 
+        return pd.DataFrame([
+            {"Symbol": "NVDA", "Security": "Nvidia", "GICS Sector": "Technology"},
+            {"Symbol": "AAPL", "Security": "Apple", "GICS Sector": "Technology"},
+            {"Symbol": "MSFT", "Security": "Microsoft", "GICS Sector": "Technology"},
+            {"Symbol": "GOOGL", "Security": "Alphabet (A)", "GICS Sector": "Communication Services"},
+            {"Symbol": "AMZN", "Security": "Amazon", "GICS Sector": "Consumer Discretionary"},
+            {"Symbol": "META", "Security": "Meta", "GICS Sector": "Communication Services"}
+        ])
 
 def get_market_intelligence(bm_prices):
     if len(bm_prices) < 200: return "N/A", "N/A", "N/A", "", "Neutral"
@@ -160,22 +174,34 @@ with t1:
 
 with t2:
     if st.button("🚀 Run S&P 500 Scan"):
-        with st.spinner("Scanning S&P 500 Leaders (Multithreaded)..."):
-            sp_all = get_sp500_list()
-            # Reduced period to 1y and enabled threads=True for performance
-            sp_data = yf.download(sp_all, period="1y", progress=False, threads=True, auto_adjust=True)['Close']
+        with st.spinner("Scanning S&P 500 Leaders (Optimized)..."):
+            # 1. Get List & Full Info Cache
+            sp_df = get_sp500_full_data()
+            sp_all = sp_df['Symbol'].tolist()
+            
+            # 2. Bulk Download (Reduced to 6mo - enough for RS calculation)
+            sp_data = yf.download(sp_all, period="6mo", progress=False, threads=True, auto_adjust=True)['Close']
             if isinstance(sp_data, pd.DataFrame) and isinstance(sp_data.columns, pd.MultiIndex): 
                 sp_data.columns = sp_data.columns.get_level_values(0)
+            
+            # 3. Fast Scanning
             opps = []
+            info_dict = sp_df.set_index('Symbol').to_dict('index')
+            
             for t in sp_data.columns:
                 if t not in portfolio_list:
-                    p = sp_data[t].ffill(); rs_series = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill())
+                    p = sp_data[t].ffill()
+                    if len(p) < 60: continue # Skip if not enough history
+                    
+                    rs_series = calc_rs_stable(p, bm_prices_full.reindex(p.index).ffill())
                     if not rs_series.empty and rs_series.iloc[-1] > 0.12: 
-                        d = get_company_static_info(t)
-                        opps.append({"Ticker": t, "Name": d["Name"], "Sector": d["Sector"], "RS Score": rs_series.iloc[-1]})
+                        d = info_dict.get(t, {"Security": t, "GICS Sector": "N/A"})
+                        opps.append({"Ticker": t, "Name": d["Security"], "Sector": d["GICS Sector"], "RS Score": rs_series.iloc[-1]})
+            
             if opps:
-                df_o = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15); st.table(df_o)
-                st.code(", ".join([t for t in pd.DataFrame(opps)['Ticker'].tolist() if t not in portfolio_list]), language="text")
+                df_o = pd.DataFrame(opps).sort_values(by="RS Score", ascending=False).head(15)
+                st.table(df_o)
+                st.code(", ".join([t for t in pd.DataFrame(opps)['Ticker'].tolist()]), language="text")
             else:
                 st.info("Keine neuen Leader gefunden.")
 
