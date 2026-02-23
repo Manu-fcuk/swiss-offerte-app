@@ -279,17 +279,19 @@ with t4:
                 index_total = (res['Market'].iloc[-1] / cap_in - 1) * 100
                 dd_s, dd_i = m_dd(res['Strategy']), m_dd(res['Market'])
 
-                # Annualized Sharpe Ratio (Approximation)
-                # periods_per_year = 12 / hold_mo_val
+                # Annualized Sharpe Ratio & Volatility
                 avg_ret = perf_series.mean() / 100
                 std_ret = perf_series.std() / 100
-                sharpe = (avg_ret / std_ret) * np.sqrt(12/hold_mo_val) if std_ret > 0 else 0
+                ann_factor = np.sqrt(12/hold_mo_val)
+                sharpe = (avg_ret / std_ret) * ann_factor if std_ret > 0 else 0
+                volatility = std_ret * ann_factor * 100
 
-                m1, m2, m3, m4 = st.columns(4)
+                m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Final Capital", f"{c:,.0f} USD", f"{strat_total:+.1f}% Total")
                 m2.metric("Alpha vs S&P 500", f"{strat_total - index_total:+.1f}%", f"Index: {index_total:+.1f}%")
                 m3.metric("Max DD Strat", f"{dd_s:.1f}%", f"Index: {dd_i:.1f}%", delta_color="inverse")
                 m4.metric("Sharpe Ratio", f"{sharpe:.2f}", "Annualized")
+                m5.metric("Volatility", f"{volatility:.1f}%", "Annualized")
                 
                 st.write(f"**Längste Pechsträhne (Losing Streak):** {max_streak} Monate in Folge mit Verlust.")
                 
